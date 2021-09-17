@@ -26,6 +26,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.sql.Types;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
@@ -37,18 +38,22 @@ import io.confluent.connect.jdbc.util.ColumnId;
 import io.confluent.connect.jdbc.util.ExpressionBuilder;
 import io.confluent.connect.jdbc.util.IdentifierRules;
 import io.confluent.connect.jdbc.util.TableId;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link DatabaseDialect} for SQL Server.
  */
 public class SybaseDatabaseDialect extends GenericDatabaseDialect {
+  protected final Logger log = LoggerFactory.getLogger(SybaseDatabaseDialect.class);
+
   /**
    * The provider for {@link SybaseDatabaseDialect}.
    */
   public static class Provider extends SubprotocolBasedProvider {
     public Provider() {
       super(SybaseDatabaseDialect.class.getSimpleName(), "microsoft:sqlserver", "sqlserver",
-            "jtds:sybase"
+              "jtds:sybase", "sybase:Tds"
       );
     }
 
@@ -137,10 +142,10 @@ public class SybaseDatabaseDialect extends GenericDatabaseDialect {
   }
 
   protected boolean maybeBindPrimitive(
-      PreparedStatement statement,
-      int index,
-      Schema schema,
-      Object value
+          PreparedStatement statement,
+          int index,
+          Schema schema,
+          Object value
   ) throws SQLException {
     // First handle non-standard bindings ...
     switch (schema.type()) {
@@ -157,9 +162,18 @@ public class SybaseDatabaseDialect extends GenericDatabaseDialect {
   }
 
   @Override
+  protected Integer getSqlTypeForSchema(Schema schema) {
+    switch (schema.type()) {
+      case STRING:
+        return Types.VARCHAR;
+      default:    return Types.INTEGER;
+    }
+  }
+
+  @Override
   public void applyDdlStatements(
-      Connection connection,
-      List<String> statements
+          Connection connection,
+          List<String> statements
   ) throws SQLException {
     boolean autoCommit = connection.getAutoCommit();
     if (!autoCommit) {
@@ -176,10 +190,10 @@ public class SybaseDatabaseDialect extends GenericDatabaseDialect {
 
   @Override
   protected Set<ColumnId> primaryKeyColumns(
-      Connection connection,
-      String catalogPattern,
-      String schemaPattern,
-      String tablePattern
+          Connection connection,
+          String catalogPattern,
+          String schemaPattern,
+          String tablePattern
   ) throws SQLException {
     // Must be done only with auto-commit enabled?!
     boolean autoCommit = connection.getAutoCommit();
@@ -195,8 +209,8 @@ public class SybaseDatabaseDialect extends GenericDatabaseDialect {
 
   @Override
   public String buildDropTableStatement(
-      TableId table,
-      DropOptions options
+          TableId table,
+          DropOptions options
   ) {
     ExpressionBuilder builder = expressionBuilder();
 
@@ -228,68 +242,70 @@ public class SybaseDatabaseDialect extends GenericDatabaseDialect {
 
   @Override
   public List<String> buildAlterTable(
-      TableId table,
-      Collection<SinkRecordField> fields
+          TableId table,
+          Collection<SinkRecordField> fields
   ) {
     ExpressionBuilder builder = expressionBuilder();
     builder.append("ALTER TABLE ");
     builder.append(table);
     builder.append(" ADD");
     writeColumnsSpec(builder, fields);
+    log.info("Sybase-buildAlterTable={}",builder.toString());
     return Collections.singletonList(builder.toString());
   }
 
   @Override
   public String buildUpsertQueryStatement(
-      TableId table,
-      Collection<ColumnId> keyColumns,
-      Collection<ColumnId> nonKeyColumns
+          TableId table,
+          Collection<ColumnId> keyColumns,
+          Collection<ColumnId> nonKeyColumns
   ) {
     ExpressionBuilder builder = expressionBuilder();
     builder.append("merge into ");
     builder.append(table);
-    builder.append(" with (HOLDLOCK) AS target using (select ");
+    builder.append(" AS target using (select ");
     builder.appendList()
-           .delimitedBy(", ")
-           .transformedBy(ExpressionBuilder.columnNamesWithPrefix("? AS "))
-           .of(keyColumns, nonKeyColumns);
+            .delimitedBy(", ")
+            .transformedBy(ExpressionBuilder.columnNamesWithPrefix("? AS "))
+            .of(keyColumns, nonKeyColumns);
     builder.append(") AS incoming on (");
     builder.appendList()
-           .delimitedBy(" and ")
-           .transformedBy(this::transformAs)
-           .of(keyColumns);
+            .delimitedBy(" and ")
+            .transformedBy(this::transformAs)
+            .of(keyColumns);
     builder.append(")");
     if (nonKeyColumns != null && !nonKeyColumns.isEmpty()) {
       builder.append(" when matched then update set ");
       builder.appendList()
-             .delimitedBy(",")
-             .transformedBy(this::transformUpdate)
-             .of(nonKeyColumns);
+              .delimitedBy(",")
+              .transformedBy(this::transformUpdate)
+              .of(nonKeyColumns);
     }
     builder.append(" when not matched then insert (");
     builder.appendList()
-           .delimitedBy(", ")
-           .transformedBy(ExpressionBuilder.columnNames())
-           .of(nonKeyColumns, keyColumns);
+            .delimitedBy(", ")
+            .transformedBy(ExpressionBuilder.columnNames())
+            .of(nonKeyColumns, keyColumns);
     builder.append(") values (");
     builder.appendList()
-           .delimitedBy(",")
-           .transformedBy(ExpressionBuilder.columnNamesWithPrefix("incoming."))
-           .of(nonKeyColumns, keyColumns);
+            .delimitedBy(",")
+            .transformedBy(ExpressionBuilder.columnNamesWithPrefix("incoming."))
+            .of(nonKeyColumns, keyColumns);
     builder.append(");");
+    log.info("Sybase-buildUpsertQueryStatement={}",builder.toString());
     return builder.toString();
   }
 
   private void transformAs(ExpressionBuilder builder, ColumnId col) {
     builder.append("target.")
-           .appendColumnName(col.name())
-           .append("=incoming.")
-           .appendColumnName(col.name());
+            .appendColumnName(col.name())
+            .append("=incoming.")
+            .appendColumnName(col.name());
   }
 
   private void transformUpdate(ExpressionBuilder builder, ColumnId col) {
     builder.appendColumnName(col.name())
-           .append("=incoming.")
-           .appendColumnName(col.name());
+            .append("=incoming.")
+            .appendColumnName(col.name());
   }
 }
